@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import Auth from "./Auth";
+import { supabase, WORKSPACE_ID } from "./supabaseClient";
 import {
   PieChart, Pie, Cell, Tooltip as RTooltip, Legend,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer
@@ -196,7 +198,85 @@ const DEFAULT_STATE = {
 };
 
 export default function App(){
+  // --- Auth (Supabase) ---
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [cloudReady, setCloudReady] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+    });
+
+    return () => {
+      mounted = false;
+      listener?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  // --- Local fallback state (localStorage) ---
   const [state, setState] = useState(() => load() ?? DEFAULT_STATE);
+
+  // --- Cloud state (Supabase) ---
+  // Load the latest saved state for this workspace after login.
+  useEffect(() => {
+    if (!session) {
+      setCloudReady(false);
+      return;
+    }
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("app_state")
+        .select("state")
+        .eq("workspace_id", WORKSPACE_ID)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Supabase load app_state error:", error);
+        setCloudReady(true);
+        return;
+      }
+
+      if (data?.state) {
+        setState(data.state);
+      }
+      setCloudReady(true);
+    })();
+  }, [session]);
+
+  // Always keep a local copy (offline fallback).
+  useEffect(() => {
+    save(state);
+  }, [state]);
+
+  // Save to Supabase (debounced) when logged in.
+  useEffect(() => {
+    if (!session || !cloudReady) return;
+
+    const t = setTimeout(async () => {
+      const payload = {
+        workspace_id: WORKSPACE_ID,
+        state,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase.from("app_state").upsert(payload);
+      if (error) console.error("Supabase save app_state error:", error);
+    }, 600);
+
+    return () => clearTimeout(t);
+  }, [state, session, cloudReady]);
+
+
   const [tab, setTab] = useState("Dashboard");
 
   const [activeProjectId, setActiveProjectId] = useState(() => state.projects[0]?.id ?? "");
@@ -212,7 +292,6 @@ export default function App(){
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickMode, setQuickMode] = useState("Ingreso"); // Ingreso | Gasto | Transferencia
 
-  useEffect(()=>{ save(state); }, [state]);
 
   useEffect(()=>{
     localStorage.setItem("dashMonth", dashMonth);
@@ -489,7 +568,33 @@ export default function App(){
   // =========================
   const tabs = ["Dashboard","Ingresos","Egresos","Tarjeta Crédito","Flujo de Caja","Proyectos","Configuración"];
 
-  return (
+  
+  // --- Auth gate ---
+  if (authLoading) {
+    return (
+      <div className="container">
+        <div className="card">Cargando sesión…</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="container">
+        <Auth />
+      </div>
+    );
+  }
+
+  if (!cloudReady) {
+    return (
+      <div className="container">
+        <div className="card">Cargando datos…</div>
+      </div>
+    );
+  }
+
+return (
     <div className="container">
       <div className="topbar">
         <div className="brand">Finanzas Proyectos</div>
@@ -506,6 +611,8 @@ export default function App(){
             {state.projects.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <button className="primary" onClick={addProject}>+ Proyecto</button>
+          <button className="ghost" onClick={async ()=>{ await supabase.auth.signOut(); localStorage.removeItem(STORE_KEY); window.location.reload(); }}>Cerrar sesión</button>
+          <div className="small" style={{opacity:0.7}}> {session?.user?.email}</div>
         </div>
       </div>
 
