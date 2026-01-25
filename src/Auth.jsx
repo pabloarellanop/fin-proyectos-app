@@ -1,208 +1,273 @@
-<<<<<<< HEAD
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabaseClient";
 
-export default function Auth({ onAuthed }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [mode, setMode] = useState("login"); // "login" | "signup"
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data?.session) onAuthed(data.session);
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) onAuthed(session);
-    });
-
-    return () => sub.subscription.unsubscribe();
-  }, [onAuthed]);
-
-  async function submit(e) {
-    e.preventDefault();
-    setErr("");
-
-    const { error } =
-      mode === "signup"
-        ? await supabase.auth.signUp({ email, password })
-        : await supabase.auth.signInWithPassword({ email, password });
-
-    if (error) setErr(error.message);
-  }
-
-  return (
-    <div className="page">
-      <div className="card" style={{ maxWidth: 420, margin: "40px auto" }}>
-        <h2 style={{ marginTop: 0 }}>
-          {mode === "signup" ? "Crear cuenta" : "Ingresar"}
-        </h2>
-
-        <form onSubmit={submit} className="col" style={{ gap: 10 }}>
-          <label>Email</label>
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
-            required
-          />
-
-          <label>Contraseña</label>
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            required
-          />
-
-          {err && <div style={{ color: "#dc2626" }}>{err}</div>}
-
-          <button className="primary" type="submit">
-            {mode === "signup" ? "Crear cuenta" : "Entrar"}
-          </button>
-
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => setMode(mode === "signup" ? "login" : "signup")}
-          >
-            {mode === "signup" ? "Ya tengo cuenta" : "Crear cuenta"}
-          </button>
-        </form>
-      </div>
-=======
-import React, { useState } from "react";
-import { supabase } from "./supabaseClient";
-
+/**
+ * Auth.jsx
+ * - Email + password (sign up / sign in)
+ * - Magic link (sign in with email link)
+ *
+ * Nota: Puedes usar solo magic link si quieres (recomendado al inicio).
+ */
 export default function Auth() {
   const [mode, setMode] = useState("magic"); // "magic" | "password"
+  const [variant, setVariant] = useState("signin"); // "signin" | "signup"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [status, setStatus] = useState("");
-  const [loading, setLoading] = useState(false);
 
-  async function sendMagicLink(e) {
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  // Donde volver después del login por email (Vercel o localhost)
+  const redirectTo = useMemo(() => {
+    // Vite expone import.meta.env.BASE_URL pero para redirect conviene usar origin
+    return window.location.origin;
+  }, []);
+
+  useEffect(() => {
+    setMsg("");
+    setErr("");
+  }, [mode, variant]);
+
+  async function handleMagicLink(e) {
     e.preventDefault();
-    setStatus("");
     setLoading(true);
+    setMsg("");
+    setErr("");
+
     try {
       const { error } = await supabase.auth.signInWithOtp({
         email,
         options: {
-          // After clicking the email link, come back to this app
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: redirectTo,
         },
       });
       if (error) throw error;
-      setStatus("Listo. Revisa tu correo y abre el link para iniciar sesión.");
-    } catch (err) {
-      setStatus(err?.message ?? "Error enviando link.");
+
+      setMsg(
+        "Te enviamos un link al correo. Ábrelo para iniciar sesión y volver a la app."
+      );
+    } catch (ex) {
+      setErr(ex?.message || "Error al enviar el link.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function signInPassword(e) {
+  async function handlePassword(e) {
     e.preventDefault();
-    setStatus("");
     setLoading(true);
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      setStatus("Sesión iniciada.");
-    } catch (err) {
-      setStatus(err?.message ?? "Error de inicio de sesión.");
-    } finally {
-      setLoading(false);
-    }
-  }
+    setMsg("");
+    setErr("");
 
-  async function signUpPassword(e) {
-    e.preventDefault();
-    setStatus("");
-    setLoading(true);
     try {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { emailRedirectTo: window.location.origin },
-      });
-      if (error) throw error;
-      setStatus("Cuenta creada. Revisa tu correo para confirmar (si aplica) e inicia sesión.");
-    } catch (err) {
-      setStatus(err?.message ?? "Error creando cuenta.");
+      if (variant === "signup") {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: redirectTo },
+        });
+        if (error) throw error;
+        setMsg(
+          "Cuenta creada. Revisa tu correo para confirmar (si está activado) y luego inicia sesión."
+        );
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+        setMsg("Sesión iniciada.");
+      }
+    } catch (ex) {
+      setErr(ex?.message || "Error en autenticación.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="card" style={{ maxWidth: 520, margin: "40px auto" }}>
-      <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
-      <p className="small" style={{ marginTop: 0 }}>
-        Accede para sincronizar la información entre dispositivos.
-      </p>
-
-      <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <button
-          className={mode === "magic" ? "primary" : "ghost"}
-          onClick={() => setMode("magic")}
-          type="button"
-        >
-          Link al correo
-        </button>
-        <button
-          className={mode === "password" ? "primary" : "ghost"}
-          onClick={() => setMode("password")}
-          type="button"
-        >
-          Contraseña
-        </button>
+    <div
+      style={{
+        maxWidth: 420,
+        margin: "40px auto",
+        padding: 16,
+        borderRadius: 16,
+        border: "1px solid rgba(0,0,0,0.12)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <h2 style={{ margin: 0 }}>Iniciar sesión</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setMode("magic")}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(0,0,0,0.12)",
+              background: mode === "magic" ? "rgba(0,0,0,0.06)" : "white",
+              cursor: "pointer",
+            }}
+          >
+            Link
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("password")}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(0,0,0,0.12)",
+              background: mode === "password" ? "rgba(0,0,0,0.06)" : "white",
+              cursor: "pointer",
+            }}
+          >
+            Password
+          </button>
+        </div>
       </div>
 
-      <form onSubmit={mode === "magic" ? sendMagicLink : signInPassword}>
-        <label className="small">Email</label>
+      <div style={{ marginTop: 12 }}>
+        <label style={{ fontSize: 12, opacity: 0.75 }}>Email</label>
         <input
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          placeholder="tu@email.com"
           type="email"
-          placeholder="tu@correo.com"
-          required
+          style={{
+            width: "100%",
+            padding: 10,
+            borderRadius: 12,
+            border: "1px solid rgba(0,0,0,0.18)",
+            marginTop: 6,
+          }}
         />
+      </div>
 
-        {mode === "password" && (
-          <>
-            <label className="small">Contraseña</label>
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              type="password"
-              placeholder="••••••••"
-              required
-            />
-          </>
-        )}
+      {mode === "password" && (
+        <div style={{ marginTop: 12 }}>
+          <label style={{ fontSize: 12, opacity: 0.75 }}>Password</label>
+          <input
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="********"
+            type="password"
+            style={{
+              width: "100%",
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid rgba(0,0,0,0.18)",
+              marginTop: 6,
+            }}
+          />
 
-        <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
-          <button className="primary" disabled={loading} type="submit">
-            {loading ? "Procesando…" : mode === "magic" ? "Enviar link" : "Iniciar sesión"}
-          </button>
-
-          {mode === "password" && (
-            <button className="ghost" disabled={loading} type="button" onClick={signUpPassword}>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button
+              type="button"
+              onClick={() => setVariant("signin")}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(0,0,0,0.12)",
+                background: variant === "signin" ? "rgba(0,0,0,0.06)" : "white",
+                cursor: "pointer",
+              }}
+            >
+              Entrar
+            </button>
+            <button
+              type="button"
+              onClick={() => setVariant("signup")}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(0,0,0,0.12)",
+                background: variant === "signup" ? "rgba(0,0,0,0.06)" : "white",
+                cursor: "pointer",
+              }}
+            >
               Crear cuenta
             </button>
-          )}
-        </div>
-
-        {status && (
-          <div className="small" style={{ marginTop: 12, opacity: 0.8 }}>
-            {status}
           </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16 }}>
+        {mode === "magic" ? (
+          <button
+            onClick={handleMagicLink}
+            disabled={loading || !email}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(0,0,0,0.12)",
+              background: "black",
+              color: "white",
+              cursor: "pointer",
+              opacity: loading || !email ? 0.6 : 1,
+            }}
+          >
+            {loading ? "Enviando..." : "Enviar link a mi correo"}
+          </button>
+        ) : (
+          <button
+            onClick={handlePassword}
+            disabled={loading || !email || !password}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(0,0,0,0.12)",
+              background: "black",
+              color: "white",
+              cursor: "pointer",
+              opacity: loading || !email || !password ? 0.6 : 1,
+            }}
+          >
+            {loading
+              ? "Procesando..."
+              : variant === "signup"
+              ? "Crear cuenta"
+              : "Iniciar sesión"}
+          </button>
         )}
-      </form>
->>>>>>> d4244fd (Add Supabase auth gate + cloud state sync)
+      </div>
+
+      {msg && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 10,
+            borderRadius: 12,
+            background: "rgba(22,163,74,0.10)",
+            border: "1px solid rgba(22,163,74,0.25)",
+            fontSize: 13,
+          }}
+        >
+          {msg}
+        </div>
+      )}
+
+      {err && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 10,
+            borderRadius: 12,
+            background: "rgba(220,38,38,0.10)",
+            border: "1px solid rgba(220,38,38,0.25)",
+            fontSize: 13,
+          }}
+        >
+          {err}
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, fontSize: 12, opacity: 0.7 }}>
+        Recomendación: usa “Link” (magic link) al inicio. Es más simple.
+      </div>
     </div>
   );
 }
