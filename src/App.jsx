@@ -47,12 +47,7 @@ function clp(n){
 function monthKey(dateISO){ return (dateISO || "").slice(0,7); }
 function sortByDate(a,b){ return String(a||"").localeCompare(String(b||"")); }
 
-function load(){
-  try{ return JSON.parse(localStorage.getItem(STORE_KEY)) ?? null; } catch { return null; }
-}
-function save(state){
-  localStorage.setItem(STORE_KEY, JSON.stringify(state));
-}
+
 
 function badgeStatus(text){
   const t = String(text||"");
@@ -223,7 +218,7 @@ export default function App(){
   }, []);
 
   // --- Local fallback state (localStorage) ---
-  const [state, setState] = useState(() => load() ?? DEFAULT_STATE);
+ const [state, setState] = useState(DEFAULT_STATE);
 
   // --- Cloud state (Supabase) ---
   // Load the latest saved state for this workspace after login.
@@ -253,10 +248,7 @@ export default function App(){
     })();
   }, [session]);
 
-  // Always keep a local copy (offline fallback).
-  useEffect(() => {
-    save(state);
-  }, [state]);
+
 
   // Save to Supabase (debounced) when logged in.
   useEffect(() => {
@@ -284,18 +276,15 @@ export default function App(){
   const [cashViewAccountId, setCashViewAccountId] = useState("CONSOLIDADO");
 
   // Dashboard: filtro de mes para “Últimos movimientos”
-  const [dashMonth, setDashMonth] = useState(
-  localStorage.getItem("dashMonth") || monthKey(new Date().toISOString())
-);
+  const [dashMonth, setDashMonth] = useState(monthKey(new Date().toISOString()));
+
 
   // Modal “Registrar…”
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickMode, setQuickMode] = useState("Ingreso"); // Ingreso | Gasto | Transferencia
 
 
-  useEffect(()=>{
-    localStorage.setItem("dashMonth", dashMonth);
-  }, [dashMonth]);
+  
 
   const settings = state.settings;
   const activeProject = state.projects.find(p=>p.id===activeProjectId) ?? state.projects[0];
@@ -597,7 +586,7 @@ export default function App(){
 return (
     <div className="container">
       <div className="topbar">
-        <div className="brand">Finanzas Proyectos</div>
+        <div className="brand">Finanzas Proyectos vTEST-1</div>
 
         <div className="row">
           <label className="small">Cuenta activa</label>
@@ -611,7 +600,7 @@ return (
             {state.projects.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <button className="primary" onClick={addProject}>+ Proyecto</button>
-          <button className="ghost" onClick={async ()=>{ await supabase.auth.signOut(); localStorage.removeItem(STORE_KEY); window.location.reload(); }}>Cerrar sesión</button>
+          <button className="ghost" onClick={async ()=>{ await supabase.auth.signOut(); window.location.reload(); }}>Cerrar sesión</button>
           <div className="small" style={{opacity:0.7}}> {session?.user?.email}</div>
         </div>
       </div>
@@ -1541,9 +1530,7 @@ function TransferForm({ accounts, defaultFrom, onAdd }){
   const [note, setNote] = useState("");
 
   useEffect(()=>{ if (defaultFrom) setFrom(defaultFrom); }, [defaultFrom]);
-  useEffect(()=>{
-  localStorage.setItem("dashMonth", dashMonth);
-}, [dashMonth]);
+
   function submit(e){
     e.preventDefault();
     const a = parseMoney(amount);
