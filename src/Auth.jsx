@@ -1,13 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabaseClient";
 
-/**
- * Auth.jsx
- * - Email + password (sign up / sign in)
- * - Magic link (sign in with email link)
- *
- * Nota: Puedes usar solo magic link si quieres (recomendado al inicio).
- */
 export default function Auth() {
   const [mode, setMode] = useState("magic"); // "magic" | "password"
   const [variant, setVariant] = useState("signin"); // "signin" | "signup"
@@ -18,11 +11,7 @@ export default function Auth() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
-  // Donde volver después del login por email (Vercel o localhost)
-  const redirectTo = useMemo(() => {
-    // Vite expone import.meta.env.BASE_URL pero para redirect conviene usar origin
-    return window.location.origin;
-  }, []);
+  const redirectTo = useMemo(() => window.location.origin, []);
 
   useEffect(() => {
     setMsg("");
@@ -38,9 +27,7 @@ export default function Auth() {
     try {
       const { error } = await supabase.auth.signInWithOtp({
         email,
-        options: {
-          emailRedirectTo: redirectTo,
-        },
+        options: { emailRedirectTo: redirectTo },
       });
       if (error) throw error;
 
@@ -68,6 +55,7 @@ export default function Auth() {
           options: { emailRedirectTo: redirectTo },
         });
         if (error) throw error;
+
         setMsg(
           "Cuenta creada. Revisa tu correo para confirmar (si está activado) y luego inicia sesión."
         );
@@ -77,6 +65,7 @@ export default function Auth() {
           password,
         });
         if (error) throw error;
+
         setMsg("Sesión iniciada.");
       }
     } catch (ex) {
