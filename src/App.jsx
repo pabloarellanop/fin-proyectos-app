@@ -1,30 +1,35 @@
 import React, { useEffect, useMemo, useState } from "react";
-import Auth from "./Auth";
-import { supabase, WORKSPACE_ID } from "./supabaseClient";
 import {
   PieChart, Pie, Cell, Tooltip as RTooltip, Legend,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer
+  BarChart, Bar, CartesianGrid, XAxis, YAxis, ResponsiveContainer
 } from "recharts";
+import { supabase, WORKSPACE_ID } from "./supabaseClient";
 
-const STORE_KEY = "fin_proyectos_v2";
+const STORE_KEY = "fin-app-state";
 
-function uid(){ return crypto.randomUUID(); }
+function uid() {
+  return Math.random().toString(36).substr(2, 9);
+}
+
 const COLOR_PALETTE = [
-  "#16a34a", // verde
-  "#22c55e", // verde claro
-  "#0ea5e9", // azul
-  "#2563eb", // azul fuerte
-  "#7c3aed", // violeta
-  "#9333ea", // morado
-  "#db2777", // fucsia
-  "#e11d48", // rojo
-  "#f97316", // naranjo
-  "#f59e0b", // ámbar
-  "#84cc16", // lima
-  "#14b8a6", // teal
-  "#64748b", // gris
-  "#334155", // gris oscuro
-  "#111827", // casi negro
+  "#06b6d4",
+  "#0ea5e9",
+  "#2563eb",
+  "#1e40af",
+  "#7c3aed",
+  "#8b5cf6",
+  "#9333ea",
+  "#a855f7",
+  "#db2777",
+  "#f472b6",
+  "#e11d48",
+  "#ef4444",
+  "#f97316",
+  "#f59e0b",
+  "#facc15",
+  "#84cc16",
+  "#10b981",
+  "#14b8a6",
 ];
 function nowISO(){ return new Date().toISOString().slice(0,10); }
 function parseMoney(x){
@@ -47,15 +52,37 @@ function clp(n){
 function monthKey(dateISO){ return (dateISO || "").slice(0,7); }
 function sortByDate(a,b){ return String(a||"").localeCompare(String(b||"")); }
 
+function load(){
+  try{ return JSON.parse(localStorage.getItem(STORE_KEY)) ?? null; } catch { return null; }
+}
+function save(state){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
+}
 
+const DOCUMENT_TYPES = [
+  { value: "sin_respaldo", label: "Sin respaldo" },
+  { value: "boleta", label: "Boleta" },
+  { value: "boleta_honorarios", label: "Boleta de honorarios" },
+  { value: "factura_afecta", label: "Factura afecta IVA" },
+  { value: "factura_exenta", label: "Factura exenta" },
+  { value: "nota_credito", label: "Nota de crédito" },
+];
 
-function badgeStatus(text){
-  const t = String(text||"");
-  if (t === "Pagado") return "ok";
-  if (t === "Parcial") return "warn";
-  if (t === "Pendiente") return "bad";
-  if (t === "Pago parcial") return "warn";
-  return "";
+const PAGE_SIZE = 10;
+
+function documentTypeLabel(type){
+  const found = DOCUMENT_TYPES.find(opt=>opt.value===type);
+  return found ? found.label : "Sin respaldo";
+}
+
+function contrastColor(hex){
+  if (!hex || typeof hex !== 'string') return '#000';
+  const c = hex.replace('#','');
+  const r = parseInt(c.length===3 ? c[0]+c[0] : c.slice(0,2), 16);
+  const g = parseInt(c.length===3 ? c[1]+c[1] : c.slice(2,4), 16);
+  const b = parseInt(c.length===3 ? c[2]+c[2] : c.slice(4,6), 16);
+  const yiq = (r*299 + g*587 + b*114) / 1000;
+  return yiq >= 128 ? '#000' : '#fff';
 }
 
 function Section({title, right, children}){
@@ -109,6 +136,8 @@ function ColorPicker({ value, onChange }) {
     </div>
   );
 }
+
+// Single-color picker uses the existing `ColorPicker` component.
 
 
 // Paleta automática (no fijamos colores explícitos para cumplir tu preferencia visual neutra)
@@ -218,7 +247,7 @@ export default function App(){
   }, []);
 
   // --- Local fallback state (localStorage) ---
- const [state, setState] = useState(DEFAULT_STATE);
+  const [state, setState] = useState(() => load() ?? DEFAULT_STATE);
 
   // --- Cloud state (Supabase) ---
   // Load the latest saved state for this workspace after login.
@@ -248,7 +277,10 @@ export default function App(){
     })();
   }, [session]);
 
-
+  // Always keep a local copy (offline fallback).
+  useEffect(() => {
+    save(state);
+  }, [state]);
 
   // Save to Supabase (debounced) when logged in.
   useEffect(() => {
@@ -276,19 +308,69 @@ export default function App(){
   const [cashViewAccountId, setCashViewAccountId] = useState("CONSOLIDADO");
 
   // Dashboard: filtro de mes para “Últimos movimientos”
-  const [dashMonth, setDashMonth] = useState(monthKey(new Date().toISOString()));
+  const [dashMonth, setDashMonth] = useState(
+  localStorage.getItem("dashMonth") || monthKey(new Date().toISOString())
+);
 
+  // Dashboard: paginación y orden de “Últimos movimientos”
+  const [dashSort, setDashSort] = useState("DESC"); // DESC = más reciente primero
+  const [dashPage, setDashPage] = useState(1);
 
   // Modal “Registrar…”
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickMode, setQuickMode] = useState("Ingreso"); // Ingreso | Gasto | Transferencia
+  const [docModalExpenseId, setDocModalExpenseId] = useState(null);
+  const [recentExpensePage, setRecentExpensePage] = useState(1);
+  const [projectExpensePage, setProjectExpensePage] = useState(1);
+  const [transferPage, setTransferPage] = useState(1);
 
 
-  
+  useEffect(()=>{
+    localStorage.setItem("dashMonth", dashMonth);
+  }, [dashMonth]);
+
+  useEffect(()=>{ setDashPage(1); }, [dashMonth, cashViewAccountId]);
 
   const settings = state.settings;
   const activeProject = state.projects.find(p=>p.id===activeProjectId) ?? state.projects[0];
   const activeAccount = state.accounts.find(a=>a.id===activeAccountId) ?? state.accounts[0];
+  const docModalExpense = state.expenses.find(e=>e.id===docModalExpenseId) || null;
+  const sortedExpenses = useMemo(()=>
+    state.expenses.slice().sort((a,b)=>sortByDate(b.datePaid, a.datePaid)),
+    [state.expenses]
+  );
+  const projectExpenses = useMemo(()=>
+    sortedExpenses.filter(e=>e.scope==="Proyecto" && e.projectCategory===activeProject?.category),
+    [sortedExpenses, activeProject?.category]
+  );
+  const recentPager = usePagination(sortedExpenses, recentExpensePage, PAGE_SIZE);
+  const projectPager = usePagination(projectExpenses, projectExpensePage, PAGE_SIZE);
+  const transfersSorted = useMemo(()=>
+    state.transfers.slice().sort((a,b)=>sortByDate(b.date, a.date)),
+    [state.transfers]
+  );
+  const transferPager = usePagination(transfersSorted, transferPage, PAGE_SIZE);
+  const transferStats = useMemo(()=>{
+    const net = new Map();
+    state.transfers.forEach(tr=>{
+      const amt = Number(tr.amount)||0;
+      net.set(tr.toAccountId, (net.get(tr.toAccountId)||0) + amt);
+      net.set(tr.fromAccountId, (net.get(tr.fromAccountId)||0) - amt);
+    });
+    const matchKeyword = (keyword)=>{
+      const needle = keyword.toLowerCase();
+      return state.accounts
+        .filter(acc=> (acc.name || "").toLowerCase().includes(needle))
+        .reduce((sum, acc)=> sum + (net.get(acc.id)||0), 0);
+    };
+    const netArquitectura = matchKeyword("arquitectura");
+    const netCorriente = matchKeyword("corriente");
+    const balance = netCorriente - netArquitectura;
+    const maxAbs = Math.max(1, Math.abs(netArquitectura), Math.abs(netCorriente), Math.abs(balance));
+    return { net, netArquitectura, netCorriente, balance, maxAbs };
+  }, [state.transfers, state.accounts]);
+
+  useEffect(()=>{ setProjectExpensePage(1); }, [activeProject?.id]);
 
   // =========================
   // CRUD Helpers
@@ -310,7 +392,16 @@ export default function App(){
       contractTotal:0,
       paymentPlan: [{ type: settings.paymentTypes[0] ?? "Anticipo", pct: 0 }]
     };
-    setState(prev=>({ ...prev, projects: [...prev.projects, p] }));
+    setState(prev=>({
+      ...prev,
+      projects: [...prev.projects, p],
+      settings: {
+        ...prev.settings,
+        incomeCategories: prev.settings.incomeCategories.includes(category)
+          ? prev.settings.incomeCategories
+          : [category, ...prev.settings.incomeCategories]
+      }
+    }));
     setActiveProjectId(p.id);
     setTab("Proyectos");
   }
@@ -320,6 +411,22 @@ export default function App(){
       projects: prev.projects.map(p=>p.id===projectId ? { ...p, ...patch } : p)
     }));
   }
+
+  function delProject(projectId){
+    const p = state.projects.find(x=>x.id===projectId);
+    if (!p) return;
+    const ok = confirm(`¿Eliminar proyecto "${p.name}"? (No borra ingresos/egresos ya registrados, solo el proyecto en la lista)`);
+    if (!ok) return;
+    setState(prev=>{
+      const nextProjects = prev.projects.filter(x=>x.id!==projectId);
+      // Ajustar proyecto activo si corresponde
+      if (activeProjectId === projectId){
+        setActiveProjectId(nextProjects[0]?.id || "");
+      }
+      return { ...prev, projects: nextProjects };
+    });
+  }
+
   function addAccount(){
     const name = prompt("Nombre de la cuenta (ej: Corriente 2, Ahorro, Caja Chica):");
     if (!name) return;
@@ -339,10 +446,21 @@ export default function App(){
   function addExpense(row){
     // Si es TC: además crea ccPurchase con categoría TC (y permite montos negativos)
     setState(prev=>{
-      const next = { ...prev, expenses: [{ id: uid(), ...row }, ...prev.expenses] };
+      const expenseId = uid();
+      const newExpense = {
+        id: expenseId,
+        documentType: "sin_respaldo",
+        documentNumber: "",
+        documentIssuedAt: "",
+        documentNotes: "",
+        documentProvider: "",
+        ...row
+      };
+      const next = { ...prev, expenses: [newExpense, ...prev.expenses] };
       if (row.method === "Tarjeta Crédito"){
         next.ccPurchases = [{
           id: uid(),
+          sourceExpenseId: expenseId,
           isPaid:false,
           datePurchase: row.datePaid,
           vendor: row.vendor || "",
@@ -355,8 +473,60 @@ export default function App(){
       return next;
     });
   }
+  function updateExpense(id, patch){
+    setState(prev=>{
+      const prevExp = prev.expenses.find(x=>x.id===id);
+      if (!prevExp) return prev;
+      const updated = { ...prevExp, ...patch };
+      const nextExpenses = prev.expenses.map(x=>x.id===id ? updated : x);
+
+      let next = { ...prev, expenses: nextExpenses };
+
+      // Si cambió el método y pasó a Tarjeta Crédito -> crear ccPurchase asociado
+      if ((prevExp.method || "") !== "Tarjeta Crédito" && (updated.method || "") === "Tarjeta Crédito"){
+        const cc = {
+          id: uid(),
+          sourceExpenseId: id,
+          isPaid: false,
+          datePurchase: updated.datePaid,
+          vendor: updated.vendor || "",
+          amount: updated.amount,
+          ccCategory: updated.ccCategory || (prev.settings.creditCardCategories?.[0] ?? "Otros"),
+          projectCategory: updated.scope==="Proyecto" ? updated.projectCategory : "",
+          note: `${updated.category}${updated.note ? " — " + updated.note : ""}`
+        };
+        next = { ...next, ccPurchases: [cc, ...prev.ccPurchases] };
+      }
+
+      // Si cambió de Tarjeta Crédito a otro método -> borrar ccPurchases vinculadas
+      if ((prevExp.method || "") === "Tarjeta Crédito" && (updated.method || "") !== "Tarjeta Crédito"){
+        next = { ...next, ccPurchases: prev.ccPurchases.filter(c=>c.sourceExpenseId !== id) };
+      }
+
+      // Si cambiaron montos/fecha/categoría en un gasto TC ya existente, sincronizar la ccPurchase vinculada
+      if ((updated.method || "") === "Tarjeta Crédito"){
+        next = {
+          ...next,
+          ccPurchases: next.ccPurchases.map(c=> c.sourceExpenseId===id ? { ...c,
+            datePurchase: updated.datePaid,
+            vendor: updated.vendor || c.vendor,
+            amount: updated.amount,
+            projectCategory: updated.scope==="Proyecto" ? updated.projectCategory : c.projectCategory,
+            note: `${updated.category}${updated.note ? " — " + updated.note : ""}`
+          } : c)
+        };
+      }
+
+      return next;
+    });
+  }
+
   function delExpense(id){
-    setState(prev=>({ ...prev, expenses: prev.expenses.filter(x=>x.id!==id) }));
+    setState(prev=>({
+      ...prev,
+      expenses: prev.expenses.filter(x=>x.id!==id),
+      ccPurchases: prev.ccPurchases.filter(c=>c.sourceExpenseId !== id)
+    }));
   }
 
   function addCCPayment(row){
@@ -386,6 +556,78 @@ export default function App(){
     }));
   }
 
+
+  // =========================
+  // Export (CSV para Excel)
+  // =========================
+  function downloadCSV(filename, rows){
+    const csvEscape = (v) => {
+      const s = String(v ?? "");
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+      return s;
+    };
+    const header = Object.keys(rows[0] || {});
+    const lines = [
+      header.join(","),
+      ...rows.map(r => header.map(h => csvEscape(r[h])).join(","))
+    ];
+    const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportIncomes(){
+    const rows = state.incomes.map(x=>({
+      fecha_pago: x.datePaid || "",
+      cuenta: accountName(state.accounts, x.accountId),
+      categoria: x.category,
+      tipo: x.typePago,
+      estado: x.status,
+      monto: x.amount,
+      monto_pagado: x.amountPaid || 0,
+      nota: x.note || ""
+    }));
+    downloadCSV("ingresos.csv", rows);
+  }
+
+  function exportExpenses(){
+    const rows = state.expenses.map(x=>({
+      fecha: x.datePaid || "",
+      cuenta: accountName(state.accounts, x.accountId),
+      alcance: x.scope,
+      proyecto: x.scope==="Proyecto" ? x.projectCategory : "",
+      categoria: x.category,
+      metodo: x.method,
+      monto: x.amount,
+      proveedor: x.vendor || "",
+      nota: x.note || "",
+      documento_tipo: documentTypeLabel(x.documentType),
+      documento_numero: x.documentNumber || "",
+      documento_fecha_emision: x.documentIssuedAt || "",
+      documento_proveedor: x.documentProvider || x.vendor || "",
+      documento_notas: x.documentNotes || "",
+    }));
+    downloadCSV("egresos.csv", rows);
+  }
+
+  function exportMovements(){
+    const rows = dashboardTxMonth.map(t=>({
+      fecha: t.date,
+      tipo: t.kind,
+      monto: t.amount,
+      cuenta: t.accountId ? accountName(state.accounts, t.accountId) : "",
+      categoria: t.category || "",
+      nota: t.note || ""
+    }));
+    downloadCSV("movimientos_caja.csv", rows);
+  }
+
   // =========================
   // Caja: transacciones reales
   // =========================
@@ -395,6 +637,8 @@ export default function App(){
       .filter(x=>x.status === "Pagado" || x.status === "Pago parcial")
       .map(x=>({
         kind:"Ingreso",
+        sourceType:"income",
+        sourceId:x.id,
         date:x.datePaid,
         amount:(x.status==="Pago parcial" ? (x.amountPaid||0) : x.amount),
         category:x.category,
@@ -409,6 +653,8 @@ export default function App(){
       .filter(x=>x.method !== "Tarjeta Crédito")
       .map(x=>({
         kind:"Egreso",
+        sourceType:"expense",
+        sourceId:x.id,
         date:x.datePaid,
         amount:x.amount,
         category:x.category,
@@ -421,6 +667,8 @@ export default function App(){
     // Pagos de TC a caja (desde una cuenta)
     const ccPayTx = state.ccPayments.map(p=>({
       kind:"Egreso",
+      sourceType:"ccPayment",
+      sourceId:p.id,
       date:p.datePaid,
       amount:p.amount,
       category:"Pago Tarjeta Crédito",
@@ -433,8 +681,8 @@ export default function App(){
     const transferTx = state.transfers.flatMap(tr=>{
       if (!tr.date) return [];
       return [
-        { kind:"Egreso", date: tr.date, amount: tr.amount, category:"Transferencia", projectCategory:"Oficina", accountId: tr.fromAccountId, note:`A ${accountName(state.accounts, tr.toAccountId)}` },
-        { kind:"Ingreso", date: tr.date, amount: tr.amount, category:"Transferencia", projectCategory:"Oficina", accountId: tr.toAccountId, note:`Desde ${accountName(state.accounts, tr.fromAccountId)}` },
+        { kind:"Egreso", sourceType:"transfer", sourceId: tr.id, date: tr.date, amount: tr.amount, category:"Transferencia", projectCategory:"Oficina", accountId: tr.fromAccountId, note:`A ${accountName(state.accounts, tr.toAccountId)}` },
+        { kind:"Ingreso", sourceType:"transfer", sourceId: tr.id, date: tr.date, amount: tr.amount, category:"Transferencia", projectCategory:"Oficina", accountId: tr.toAccountId, note:`Desde ${accountName(state.accounts, tr.fromAccountId)}` },
       ];
     });
 
@@ -487,29 +735,49 @@ export default function App(){
     return ["ALL", ...months];
   }, [months]);
   const dashboardTxMonth = useMemo(()=>{
-  const tx = dashboardTx.slice().sort((a,b)=>sortByDate(b.date,a.date));
-    if (dashMonth === "ALL") return tx;
-   return tx.filter(t => monthKey(t.date) === dashMonth);
-  }, [dashboardTx, dashMonth]);
+  const tx = dashboardTx.slice().sort((a,b)=>{
+    const cmp = sortByDate(b.date,a.date);
+    return dashSort === "DESC" ? cmp : -cmp;
+  });
+  if (dashMonth === "ALL") return tx;
+  return tx.filter(t => monthKey(t.date) === dashMonth);
+}, [dashboardTx, dashMonth, dashSort]);
 
-  const kpis = useMemo(()=>{
+  const DASH_PAGE_SIZE = 10;
+  const dashTotalPages = Math.max(1, Math.ceil(dashboardTxMonth.length / DASH_PAGE_SIZE));
+  const dashPageClamped = Math.min(Math.max(dashPage, 1), dashTotalPages);
+  const dashStart = (dashPageClamped - 1) * DASH_PAGE_SIZE;
+  const dashPageTx = dashboardTxMonth.slice(dashStart, dashStart + DASH_PAGE_SIZE);
+
+const kpis = useMemo(()=>{
   const totalIncome = dashboardTxMonth.filter(t=>t.kind==="Ingreso").reduce((a,b)=>a+b.amount,0);
   const totalExpense = dashboardTxMonth.filter(t=>t.kind==="Egreso").reduce((a,b)=>a+b.amount,0);
   const net = totalIncome - totalExpense;
   const ccOutstanding = state.ccPurchases.filter(c=>!c.isPaid).reduce((a,b)=>a+b.amount,0);
-  return { totalIncome, totalExpense, net, ccOutstanding };
-}, [dashboardTxMonth, state.ccPurchases]);
+
+  // Saldo en caja según mes seleccionado (y cuenta/Consolidado)
+  let cashBalance = 0;
+  if (cashflow.length){
+    if (dashMonth === "ALL"){
+      cashBalance = cashflow[cashflow.length - 1].closing;
+    } else {
+      const row = cashflow.find(r => r.month === dashMonth);
+      cashBalance = row ? row.closing : cashflow[cashflow.length - 1].closing;
+    }
+  }
+  return { totalIncome, totalExpense, net, ccOutstanding, cashBalance };
+}, [dashboardTxMonth, state.ccPurchases, cashflow, dashMonth]);
 
   const expenseByCategory = useMemo(()=>{
-  const map = new Map();
-  dashboardTxMonth.filter(t=>t.kind==="Egreso").forEach(t=>{
-    const key = t.category || "Sin categoría";
-    map.set(key, (map.get(key)||0) + t.amount);
-  });
-  return [...map.entries()].map(([name, value])=>({ name, value })).sort((a,b)=>b.value-a.value);
-}, [dashboardTxMonth]);
+    const map = new Map();
+    dashboardTxMonth.filter(t=>t.kind==="Egreso").forEach(t=>{
+      const key = t.category || "Sin categoría";
+      map.set(key, (map.get(key)||0) + t.amount);
+    });
+    return [...map.entries()].map(([name, value])=>({ name, value })).sort((a,b)=>b.value-a.value);
+  }, [dashboardTxMonth]);
 
-  const incomeByCategory = useMemo(()=>{
+const incomeByCategory = useMemo(()=>{
   const map = new Map();
   dashboardTxMonth.filter(t=>t.kind==="Ingreso").forEach(t=>{
     const key = t.category || "Sin categoría";
@@ -555,7 +823,7 @@ export default function App(){
   // =========================
   // Tabs
   // =========================
-  const tabs = ["Dashboard","Ingresos","Egresos","Tarjeta Crédito","Flujo de Caja","Proyectos","Configuración"];
+  const tabs = ["Dashboard","Ingresos","Egresos","Tarjeta Crédito","Flujo de Caja","Proyectos","Transferencias","Configuración"];
 
   
   // --- Auth gate ---
@@ -586,7 +854,7 @@ export default function App(){
 return (
     <div className="container">
       <div className="topbar">
-        <div className="brand">Finanzas Proyectos vTEST-1</div>
+        <div className="brand">Finanzas Proyectos</div>
 
         <div className="row">
           <label className="small">Cuenta activa</label>
@@ -600,7 +868,7 @@ return (
             {state.projects.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <button className="primary" onClick={addProject}>+ Proyecto</button>
-          <button className="ghost" onClick={async ()=>{ await supabase.auth.signOut(); window.location.reload(); }}>Cerrar sesión</button>
+          <button className="ghost" onClick={async ()=>{ await supabase.auth.signOut(); localStorage.removeItem(STORE_KEY); window.location.reload(); }}>Cerrar sesión</button>
           <div className="small" style={{opacity:0.7}}> {session?.user?.email}</div>
         </div>
       </div>
@@ -694,9 +962,19 @@ return (
                 <div className="value">${clp(kpis.net)}</div>
               </div>
               <div className="kpi">
+                <div className="label">Saldo en caja</div>
+                <div className="value">${clp(kpis.cashBalance)}</div>
+              </div>
+              <div className="kpi">
                 <div className="label">TC pendiente (compras no pagadas)</div>
                 <div className="value">${clp(kpis.ccOutstanding)}</div>
               </div>
+            </div>
+
+            <div className="row" style={{ justifyContent:"flex-end", marginTop: 8 }}>
+              <button className="danger" type="button" onClick={()=>delProject(activeProject.id)}>
+                Eliminar proyecto
+              </button>
             </div>
 
             <div className="hr"></div>
@@ -708,9 +986,10 @@ return (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie data={expenseByCategory} dataKey="value" nameKey="name" outerRadius={90} label={false} labelLine={false}>
-                        {expenseByCategory.map((row, i)=>{
+                          {expenseByCategory.map((row, i)=>{
                           const name = row?.name;
-                          const color = state.settings.categoryColors?.expense?.[name];
+                          const colors = state.settings.categoryColors?.expense?.[name];
+                          const color = Array.isArray(colors) ? colors[0] : colors;
                           const fallback = autoCells(expenseByCategory.length)[i];
                           return <Cell key={i} fill={color || fallback} />;
                         })}
@@ -728,9 +1007,10 @@ return (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie data={incomeByCategory} dataKey="value" nameKey="name" outerRadius={90} label={false} labelLine={false}>
-                        {incomeByCategory.map((row, i)=>{
+                          {incomeByCategory.map((row, i)=>{
                           const name = row?.name;
-                          const color = state.settings.categoryColors?.income?.[name];
+                          const colors = state.settings.categoryColors?.income?.[name];
+                          const color = Array.isArray(colors) ? colors[0] : colors;
                           const fallback = autoCells(incomeByCategory.length)[i];
                           return <Cell key={i} fill={color || fallback} />;
                         })}
@@ -747,25 +1027,38 @@ return (
           <Section
             title="Últimos movimientos (caja)"
             right={
-             <div className="row">
-               <label className="small">Mes</label>
-               <select value={dashMonth} onChange={(e)=>setDashMonth(e.target.value)}>
-                 {dashboardMonths.map(m=>(
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                <label className="small">Mes</label>
+                <select value={dashMonth} onChange={(e)=>setDashMonth(e.target.value)}>
+                  {dashboardMonths.map(m=>(
                     <option key={m} value={m}>
                       {monthLabel(m)}
                     </option>
                   ))}
                 </select>
+
+                <label className="small">Orden</label>
+                <select value={dashSort} onChange={(e)=>setDashSort(e.target.value)}>
+                  <option value="DESC">Más reciente</option>
+                  <option value="ASC">Más antiguo</option>
+                </select>
+
+                <button className="ghost" onClick={exportMovements}>Exportar movimientos</button>
+
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="ghost" onClick={()=>setDashPage(p=>Math.max(1, p-1))} disabled={dashPageClamped<=1}>◀</button>
+                  <span className="small">{dashPageClamped} / {dashTotalPages}</span>
+                  <button className="ghost" onClick={()=>setDashPage(p=>Math.min(dashTotalPages, p+1))} disabled={dashPageClamped>=dashTotalPages}>▶</button>
+                </div>
               </div>
-           }
+            }
           >
             <table>
               <thead>
                 <tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Cuenta</th><th>Categoría</th><th>Nota</th></tr>
               </thead>
               <tbody>
-                {dashboardTxMonth
-                 .slice(0, 30) // puedes ajustar 14, 20, 30
+                {dashPageTx
                  .map((t,idx)=>(
                    <tr key={idx}>
                      <td>{t.date}</td>
@@ -778,7 +1071,33 @@ return (
                           ${clp(t.amount)}
                       </td>
                       <td>{accountName(state.accounts, t.accountId)}</td>
-                     <td>{t.category}</td>
+                     <td>
+                        {t.sourceType==="income" ? (
+                          <select
+                            value={t.category}
+                            onChange={(e)=>updateIncome(t.sourceId, { category: e.target.value })}
+                          >
+                            {settings.incomeCategories.map(c=><option key={c} value={c}>{c}</option>)}
+                          </select>
+                        ) : t.sourceType==="expense" ? (
+                          <select
+                            value={t.category}
+                            onChange={(e)=>updateExpense(t.sourceId, { category: e.target.value })}
+                          >
+                            {( (state.expenses.find(x=>x.id===t.sourceId)?.scope)==="Oficina"
+                              ? settings.expenseCategoriesOffice
+                              : settings.expenseCategoriesProject
+                            ).map(c=>{
+                              const colors = state.settings.categoryColors?.expense?.[c];
+                              const color = Array.isArray(colors) ? colors[0] : colors;
+                              const style = color ? { backgroundColor: color, color: contrastColor(color) } : undefined;
+                              return <option key={c} value={c} style={style}>{c}</option>;
+                            })}
+                          </select>
+                        ) : (
+                          <span>{t.category}</span>
+                        )}
+                      </td>
                      <td className="small">{t.note}</td>
                     </tr>
                   ))}
@@ -808,7 +1127,7 @@ return (
             </div>
           </Section>
 
-          <Section title="Ingresos recientes (editable)">
+          <Section title="Ingresos recientes (editable)" right={<button className="ghost" onClick={exportIncomes}>Exportar ingresos</button>}>
             <table>
               <thead>
                 <tr>
@@ -828,7 +1147,11 @@ return (
                       />
                     </td>
                     <td>{accountName(state.accounts, x.accountId)}</td>
-                    <td>{x.category}</td>
+                    <td>
+                      <select value={x.category} onChange={(e)=>updateIncome(x.id, { category: e.target.value })}>
+                        {settings.incomeCategories.map(c=><option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </td>
                     <td>{x.typePago}</td>
                     <td>
                       <select
@@ -883,27 +1206,108 @@ return (
             </div>
           </Section>
 
-          <Section title="Egresos recientes">
+          <Section title="Egresos recientes" right={<button className="ghost" onClick={exportExpenses}>Exportar egresos</button>}>
             <table>
               <thead>
-                <tr><th>Fecha</th><th>Cuenta</th><th>Alcance</th><th>Centro</th><th>Categoría</th><th>Método</th><th>Monto</th><th></th></tr>
+                <tr><th>Fecha</th><th>Cuenta</th><th>Alcance</th><th>Centro</th><th>Categoría</th><th>Método</th><th>Documento</th><th>Monto</th><th></th></tr>
               </thead>
               <tbody>
-                {state.expenses.slice(0,22).map(x=>(
+                {recentPager.pageItems.map(x=>{
+                  const projectOptions = settings.incomeCategories.filter(y=>y.startsWith("OBRA:"));
+                  const docType = x.documentType || "sin_respaldo";
+                  const docLabel = documentTypeLabel(docType);
+                  const storedProvider = (x.documentProvider || "").trim();
+                  const vendorName = (x.vendor || "").trim();
+                  const docProvider = storedProvider || vendorName;
+                  const providerIsCustom = storedProvider && storedProvider !== vendorName;
+                  const hasDocument = (docType && docType !== "sin_respaldo")
+                    || x.documentNumber
+                    || x.documentIssuedAt
+                    || x.documentNotes
+                    || providerIsCustom;
+                  return (
                   <tr key={x.id}>
-                    <td>{x.datePaid}</td>
-                    <td>{accountName(state.accounts, x.accountId)}</td>
-                    <td>{x.scope}</td>
-                    <td>{x.scope==="Proyecto" ? x.projectCategory : "Oficina"}</td>
-                    <td>{x.category}</td>
-                    <td>{x.method}</td>
-                    <td>${clp(x.amount)}</td>
+                    <td>
+                      <input type="date" value={x.datePaid || ""} onChange={(e)=>updateExpense(x.id, { datePaid: e.target.value })} />
+                    </td>
+                    <td>
+                      <select value={x.accountId} onChange={(e)=>updateExpense(x.id, { accountId: e.target.value })}>
+                        {state.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <select value={x.scope} onChange={(e)=>{
+                        const next = e.target.value;
+                        updateExpense(x.id, { scope: next, projectCategory: next==="Proyecto" ? (x.projectCategory || projectOptions[0] || "") : "" });
+                      }}>
+                        {["Oficina","Proyecto"].map(s=> <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      {x.scope==="Proyecto" ? (
+                        <select value={x.projectCategory || ""} onChange={(e)=>updateExpense(x.id, { projectCategory: e.target.value })}>
+                          {projectOptions.map(c=><option key={c} value={c}>{c}</option>)}
+                        </select>
+                      ) : (
+                        <span>Oficina</span>
+                      )}
+                    </td>
+                    <td>
+                      {(() => {
+                        const selColors = state.settings.categoryColors?.expense?.[x.category];
+                        const selColor = Array.isArray(selColors) ? selColors[0] : selColors;
+                        const selectStyle = selColor ? { backgroundColor: selColor, color: contrastColor(selColor), padding: '6px 8px', borderRadius: 6 } : undefined;
+                        return (
+                          <select
+                            value={x.category}
+                            onChange={(e)=>updateExpense(x.id, { category: e.target.value })}
+                            style={selectStyle}
+                          >
+                            {(x.scope==="Oficina" ? settings.expenseCategoriesOffice : settings.expenseCategoriesProject)
+                              .map(c=>{
+                                const colors = state.settings.categoryColors?.expense?.[c];
+                                const color = Array.isArray(colors) ? colors[0] : colors;
+                                const style = color ? { backgroundColor: color, color: contrastColor(color) } : undefined;
+                                return <option key={c} value={c} style={style}>{c}</option>;
+                              })}
+                          </select>
+                        );
+                      })()}
+                    </td>
+                    <td>
+                      <select value={x.method || "Transferencia"} onChange={(e)=>updateExpense(x.id, { method: e.target.value })}>
+                        {["Transferencia","Débito","Efectivo","Tarjeta Crédito"].map(m=><option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <div className="small" style={{ marginBottom:6 }}>
+                        <div><b>{docLabel}</b></div>
+                        {docProvider && <div>Proveedor: {docProvider}</div>}
+                        {x.documentNumber && <div>N° {x.documentNumber}</div>}
+                        {x.documentIssuedAt && <div>Emisión: {x.documentIssuedAt}</div>}
+                        {x.documentNotes && <div className="mini">{x.documentNotes}</div>}
+                        {!hasDocument && (
+                          <div className="muted">Sin respaldo registrado.</div>
+                        )}
+                      </div>
+                      <button className="ghost" type="button" onClick={()=>setDocModalExpenseId(x.id)}>
+                        {hasDocument ? "Editar documento" : "Agregar documento"}
+                      </button>
+                    </td>
+                    <td>
+                      <input value={x.amount} onChange={(e)=>updateExpense(x.id, { amount: parseMoney(e.target.value) })} style={{ width:120 }} />
+                    </td>
                     <td><button className="danger" onClick={()=>delExpense(x.id)}>Eliminar</button></td>
                   </tr>
-                ))}
-                {state.expenses.length===0 && <tr><td colSpan={8} className="small">Sin egresos.</td></tr>}
+                )})}
+                {recentPager.total===0 && <tr><td colSpan={9} className="small">Sin egresos.</td></tr>}
               </tbody>
             </table>
+            <PaginationFooter
+              pager={recentPager}
+              onPrev={()=>setRecentExpensePage(p=>Math.max(1, p-1))}
+              onNext={()=>setRecentExpensePage(p=>p+1)}
+            />
           </Section>
         </div>
       )}
@@ -1056,6 +1460,10 @@ return (
               </label>
             </div>
 
+            <div style={{ marginTop: 8 }}>
+              <button className="danger" onClick={()=>{ if (activeProject?.id) delProject(activeProject.id); }}>Eliminar proyecto</button>
+            </div>
+
             <div className="hr"></div>
 
             <div className="h2">Plan de pagos contractual (hitos y %)</div>
@@ -1079,6 +1487,59 @@ return (
               paymentTypes={settings.paymentTypes}
               receiptsMap={projectReceiptsByType[activeProject.id]}
             />
+            <div className="hr"></div>
+
+            <Section title="Progreso y desglose de gasto">
+              {(() => {
+                const contract = Number(activeProject?.contractTotal || 0);
+                const spent = cashTransactions
+                  .filter(t=>t.kind==="Egreso" && t.projectCategory===activeProject?.category)
+                  .reduce((s,t)=>s + (Number(t.amount)||0), 0);
+                const percent = contract > 0 ? Math.round((spent / contract) * 100) : 0;
+
+                // breakdown by expense category (project-related)
+                const map = new Map();
+                cashTransactions
+                  .filter(t=>t.kind==="Egreso" && t.projectCategory===activeProject?.category)
+                  .forEach(t=> map.set(t.category || "Sin categoría", (map.get(t.category)||0) + t.amount));
+                const breakdown = [...map.entries()].map(([name, value])=>({ name, value })).sort((a,b)=>b.value-a.value);
+
+                return (
+                  <div>
+                    <div style={{ marginBottom: 8 }}>
+                      <div className="muted">Contrato: ${clp(contract)} — Gastado: ${clp(spent)} {contract>0 && <span>({percent}%)</span>}</div>
+                      <div style={{ height: 16, background: '#e5e7eb', borderRadius: 8, overflow: 'hidden', marginTop:6 }}>
+                        <div style={{ width: Math.min(100, Math.max(0, percent)) + '%', height: '100%', background: '#16a34a' }} />
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 12 }}>
+                      <div className="h3">Detalle gasto por categoría</div>
+                      <table>
+                        <thead><tr><th>Categoría</th><th>Monto</th></tr></thead>
+                        <tbody>
+                          {breakdown.map(b=> (
+                            <tr key={b.name}>
+                              <td>
+                                {(() => {
+                                  const colors = state.settings.categoryColors?.expense?.[b.name];
+                                  const color = Array.isArray(colors) ? colors[0] : colors;
+                                  if (!color) return <span>{b.name}</span>;
+                                  const fg = contrastColor(color);
+                                  return <span style={{ display:'inline-block', padding:'4px 8px', borderRadius:8, background: color, color: fg, fontWeight:600 }}>{b.name}</span>;
+                                })()}
+                              </td>
+                              <td>${clp(b.value)}</td>
+                            </tr>
+                          ))}
+                          {breakdown.length===0 && <tr><td colSpan={2} className="small">Sin gastos registrados para este proyecto.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+            </Section>
           </Section>
 
           <Section title="Resumen por proyecto (caja)">
@@ -1099,6 +1560,115 @@ return (
                 })}
               </tbody>
             </table>
+          </Section>
+
+          <Section title="Egresos del proyecto">
+            <table>
+              <thead><tr><th>Fecha</th><th>Cuenta</th><th>Categoría</th><th>Método</th><th>Proveedor</th><th>Monto</th><th>Nota</th><th></th></tr></thead>
+              <tbody>
+                {projectPager.pageItems.map(e=> (
+                  <tr key={e.id}>
+                    <td>{e.datePaid}</td>
+                    <td>{accountName(state.accounts, e.accountId)}</td>
+                    <td>
+                      {(() => {
+                        const colors = state.settings.categoryColors?.expense?.[e.category];
+                        const color = Array.isArray(colors) ? colors[0] : colors;
+                        if (!color) return <span>{e.category}</span>;
+                        const fg = contrastColor(color);
+                        return (
+                          <span style={{ display:'inline-block', padding:'4px 8px', borderRadius:8, background: color, color: fg, fontWeight:600 }}>
+                            {e.category}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td>{e.method}</td>
+                    <td>{e.vendor || ""}</td>
+                    <td>${clp(e.amount)}</td>
+                    <td className="small">{e.note}</td>
+                    <td><button className="danger" onClick={()=>delExpense(e.id)}>Eliminar</button></td>
+                  </tr>
+                ))}
+                {projectPager.total===0 && (
+                  <tr><td colSpan={8} className="small">No hay egresos para este proyecto.</td></tr>
+                )}
+              </tbody>
+            </table>
+            <PaginationFooter
+              pager={projectPager}
+              onPrev={()=>setProjectExpensePage(p=>Math.max(1, p-1))}
+              onNext={()=>setProjectExpensePage(p=>p+1)}
+            />
+          </Section>
+        </div>
+      )}
+
+      {tab==="Transferencias" && (
+        <div className="grid" style={{ marginTop:12 }}>
+          <Section title="Indicador de flujo entre cuentas">
+            {state.transfers.length ? (
+              <div>
+                <div className="row" style={{ justifyContent:"space-between", fontWeight:600, textTransform:"uppercase", marginBottom:6 }}>
+                  <span>Arquitectura</span>
+                  <span>Corriente</span>
+                </div>
+                {(() => {
+                  const pct = Math.min(50, (Math.abs(transferStats.balance) / transferStats.maxAbs) * 50);
+                  const baseStyle = {
+                    position:"relative",
+                    height:18,
+                    borderRadius:9,
+                    background:'#e5e7eb',
+                    overflow:'hidden'
+                  };
+                  const segmentStyle = transferStats.balance >= 0
+                    ? { left:'50%', width:`${pct}%`, background:'#16a34a' }
+                    : { right:'50%', width:`${pct}%`, background:'#dc2626' };
+                  return (
+                    <div style={baseStyle}>
+                      <div style={{ position:'absolute', left:'50%', top:0, bottom:0, width:2, background:'#fff' }}></div>
+                      <div style={{ position:'absolute', top:0, bottom:0, ...segmentStyle }}></div>
+                    </div>
+                  );
+                })()}
+                <div className="small" style={{ marginTop:8 }}>
+                  Balance neto hacia Corriente: <b>${clp(transferStats.balance)}</b>
+                  {transferStats.balance===0 ? " (equilibrado)" : transferStats.balance>0 ? " (flujo neto hacia Corriente)" : " (flujo neto hacia Arquitectura)"}
+                </div>
+                <div className="mini">
+                  *Sumatoria neta según transferencias entre cuentas con nombres que contienen “arquitectura” vs “corriente”.
+                </div>
+              </div>
+            ) : (
+              <div className="muted">Aún no hay transferencias para analizar.</div>
+            )}
+          </Section>
+
+          <Section title="Historial de transferencias entre cuentas">
+            <table>
+              <thead><tr><th>Fecha</th><th>Desde</th><th>Hacia</th><th>Monto</th><th>Nota</th><th></th></tr></thead>
+              <tbody>
+                {transferPager.pageItems.map(tr=>(
+                  <tr key={tr.id}>
+                    <td>{tr.date}</td>
+                    <td>{accountName(state.accounts, tr.fromAccountId)}</td>
+                    <td>{accountName(state.accounts, tr.toAccountId)}</td>
+                    <td>${clp(tr.amount)}</td>
+                    <td className="small">{tr.note}</td>
+                    <td><button className="danger" onClick={()=>delTransfer(tr.id)}>Eliminar</button></td>
+                  </tr>
+                ))}
+                {transferPager.total===0 && (
+                  <tr><td colSpan={6} className="small">Sin transferencias registradas.</td></tr>
+                )}
+              </tbody>
+            </table>
+            <PaginationFooter
+              pager={transferPager}
+              onPrev={()=>setTransferPage(p=>Math.max(1, p-1))}
+              onNext={()=>setTransferPage(p=>p+1)}
+            />
           </Section>
         </div>
       )}
@@ -1151,81 +1721,90 @@ return (
             />
           </Section>
 
-          <Section title="Transferencias entre cuentas">
-            <div className="muted">Se registran desde Dashboard → Registrar… → Transferencia.</div>
-            <div className="hr"></div>
+          <Section title="Colores: Categorías de ingresos">
             <table>
-              <thead><tr><th>Fecha</th><th>Desde</th><th>Hacia</th><th>Monto</th><th>Nota</th><th></th></tr></thead>
+              <thead><tr><th>Categoría</th><th>Color</th></tr></thead>
               <tbody>
-                {state.transfers.slice(0,12).map(tr=>(
-                  <tr key={tr.id}>
-                    <td>{tr.date}</td>
-                    <td>{accountName(state.accounts, tr.fromAccountId)}</td>
-                    <td>{accountName(state.accounts, tr.toAccountId)}</td>
-                    <td>${clp(tr.amount)}</td>
-                    <td className="small">{tr.note}</td>
-                    <td><button className="danger" onClick={()=>delTransfer(tr.id)}>Eliminar</button></td>
+                {settings.incomeCategories.map(cat=>(
+                  <tr key={cat}>
+                    <td>{cat}</td>
+                    <td>
+                      <ColorPicker
+                        value={settings.categoryColors?.income?.[cat] || ""}
+                        onChange={(color)=>updateSettings({
+                          categoryColors: {
+                            ...(settings.categoryColors||{}),
+                            income: {
+                              ...(settings.categoryColors?.income||{}),
+                              [cat]: color
+                            }
+                          }
+                        })}
+                      />
+                    </td>
                   </tr>
                 ))}
-                {state.transfers.length===0 && <tr><td colSpan={6} className="small">Sin transferencias registradas.</td></tr>}
               </tbody>
             </table>
           </Section>
-          <Section title="Colores: Categorías de ingresos">
-  <table>
-    <thead><tr><th>Categoría</th><th>Color</th></tr></thead>
-    <tbody>
-      {settings.incomeCategories.map(cat=>(
-        <tr key={cat}>
-          <td>{cat}</td>
-          <td>
-            <ColorPicker
-            value={settings.categoryColors?.income?.[cat]}
-            onChange={(color)=>updateSettings({
-              categoryColors: {
-                ...(settings.categoryColors||{}),
-                income: {
-                  ...(settings.categoryColors?.income||{}),
-                  [cat]: color
-                  }
-              }
-            })}
-            />
-          </td>
-        </tr>
-      ))}
-    </tbody>
-  </table>
-</Section>
 
-<Section title="Colores: Categorías de egresos">
-  <table>
-    <thead><tr><th>Categoría</th><th>Color</th></tr></thead>
-    <tbody>
-      {[...settings.expenseCategoriesOffice, ...settings.expenseCategoriesProject].map(cat=>(
-        <tr key={cat}>
-          <td>{cat}</td>
-          <td>
-            <ColorPicker
-              value={settings.categoryColors?.expense?.[cat] || ""}
-              onChange={(color)=>updateSettings({
-                categoryColors: {
-                  ...(settings.categoryColors||{}),
-                  expense: {
-                    ...(settings.categoryColors?.expense||{}),
-                    [cat]: color
-                  }
-                }
-              })}
-            />
-          </td>
-        </tr>
-      ))}
-    </tbody>
-  </table>
-</Section>
+          <Section title="Colores: Categorías de egresos">
+            <table>
+              <thead><tr><th>Categoría</th><th>Color</th></tr></thead>
+              <tbody>
+                {[...settings.expenseCategoriesOffice, ...settings.expenseCategoriesProject].map(cat=>(
+                  <tr key={cat}>
+                    <td>{cat}</td>
+                    <td>
+                      <ColorPicker
+                        value={settings.categoryColors?.expense?.[cat] || ""}
+                        onChange={(color)=>updateSettings({
+                          categoryColors: {
+                            ...(settings.categoryColors||{}),
+                            expense: {
+                              ...(settings.categoryColors?.expense||{}),
+                              [cat]: color
+                            }
+                          }
+                        })}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Section>
         </div>
       )}
+
+      <DocumentModal
+        open={!!docModalExpenseId}
+        expense={docModalExpense}
+        onClose={()=>setDocModalExpenseId(null)}
+        onSave={(payload)=>{
+          if (!docModalExpenseId) return;
+          updateExpense(docModalExpenseId, {
+            documentType: payload.documentType,
+            documentNumber: payload.documentNumber,
+            documentIssuedAt: payload.documentIssuedAt,
+            documentNotes: payload.documentNotes,
+            documentProvider: payload.documentProvider,
+          });
+          setDocModalExpenseId(null);
+        }}
+        onRemove={()=>{
+          if (!docModalExpenseId) return;
+          const fallbackProvider = docModalExpense?.vendor || "";
+          updateExpense(docModalExpenseId, {
+            documentType: "sin_respaldo",
+            documentNumber: "",
+            documentIssuedAt: "",
+            documentNotes: "",
+            documentProvider: fallbackProvider,
+          });
+          setDocModalExpenseId(null);
+        }}
+      />
     </div>
   );
   
@@ -1430,13 +2009,18 @@ function ExpenseForm({ settings, accounts, defaultAccountId, activeProject, onAd
 
         <label>Categoría
           <select value={category} onChange={(e)=>setCategory(e.target.value)}>
-            {(scope==="Oficina" ? settings.expenseCategoriesOffice : settings.expenseCategoriesProject).map(c=><option key={c} value={c}>{c}</option>)}
+            {(scope==="Oficina" ? settings.expenseCategoriesOffice : settings.expenseCategoriesProject).map(c=>{
+              const colors = settings.categoryColors?.expense?.[c];
+              const color = Array.isArray(colors) ? colors[0] : colors;
+              const style = color ? { backgroundColor: color, color: contrastColor(color) } : undefined;
+              return <option key={c} value={c} style={style}>{c}</option>;
+            })}
           </select>
         </label>
 
         <label>Método de pago
           <select value={method} onChange={(e)=>setMethod(e.target.value)}>
-            {["Transferencia","Efectivo","Tarjeta Crédito"].map(m=><option key={m} value={m}>{m}</option>)}
+            {["Transferencia","Débito","Efectivo","Tarjeta Crédito"].map(m=><option key={m} value={m}>{m}</option>)}
           </select>
         </label>
 
@@ -1530,7 +2114,6 @@ function TransferForm({ accounts, defaultFrom, onAdd }){
   const [note, setNote] = useState("");
 
   useEffect(()=>{ if (defaultFrom) setFrom(defaultFrom); }, [defaultFrom]);
-
   function submit(e){
     e.preventDefault();
     const a = parseMoney(amount);
@@ -1673,5 +2256,128 @@ function ProjectPaymentSummary({ project, paymentTypes, receiptsMap }){
         {all.length===0 && <tr><td colSpan={5} className="small">Define el plan de pagos y registra ingresos para ver estado.</td></tr>}
       </tbody>
     </table>
+  );
+}
+
+function DocumentModal({ open, expense, onClose, onSave, onRemove }){
+  const [type, setType] = useState("sin_respaldo");
+  const [number, setNumber] = useState("");
+  const [issuedAt, setIssuedAt] = useState(nowISO());
+  const [provider, setProvider] = useState("");
+  const [notes, setNotes] = useState("");
+
+  useEffect(()=>{
+    if (!open || !expense){
+      setType("sin_respaldo");
+      setNumber("");
+      setIssuedAt(nowISO());
+      setProvider("");
+      setNotes("");
+      return;
+    }
+    setType(expense.documentType || "sin_respaldo");
+    setNumber(expense.documentNumber || "");
+    setIssuedAt(expense.documentIssuedAt || expense.datePaid || nowISO());
+    setProvider(expense.documentProvider || expense.vendor || "");
+    setNotes(expense.documentNotes || "");
+  }, [open, expense]);
+
+  if (!open || !expense){
+    return null;
+  }
+
+  const vendorName = (expense.vendor || "").trim();
+  const storedProvider = (expense.documentProvider || "").trim();
+  const providerIsCustom = storedProvider && storedProvider !== vendorName;
+  const hasExistingDoc = (expense.documentType && expense.documentType !== "sin_respaldo")
+    || expense.documentNumber
+    || expense.documentIssuedAt
+    || expense.documentNotes
+    || providerIsCustom;
+
+  function submit(e){
+    e.preventDefault();
+    const cleanNumber = type === "sin_respaldo" ? "" : number.trim();
+    const cleanIssuedAt = type === "sin_respaldo" ? "" : (issuedAt || "");
+    const cleanProvider = (provider || vendorName).trim();
+
+    onSave({
+      documentType: type,
+      documentNumber: cleanNumber,
+      documentIssuedAt: cleanIssuedAt,
+      documentProvider: cleanProvider,
+      documentNotes: notes.trim(),
+    });
+    onClose();
+  }
+
+  function handleRemove(){
+    onRemove();
+  }
+
+  return (
+    <Modal open={open} title={`Documento de respaldo — ${expense.vendor || expense.category}`} onClose={onClose}>
+      <form onSubmit={submit} className="col" style={{ gap:12 }}>
+        <label>Tipo de documento
+          <select value={type} onChange={(e)=>setType(e.target.value)}>
+            {DOCUMENT_TYPES.map(opt=>(
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </label>
+
+        <label>Fecha de emisión
+          <input type="date" value={issuedAt} onChange={(e)=>setIssuedAt(e.target.value)} />
+        </label>
+
+        <label>Número / folio
+          <input value={number} onChange={(e)=>setNumber(e.target.value)} placeholder="Ej: 12345" />
+        </label>
+
+        <label>Proveedor
+          <input value={provider} onChange={(e)=>setProvider(e.target.value)} placeholder="Razón social o proveedor" />
+        </label>
+
+        <label>Notas
+          <input value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Observaciones" />
+        </label>
+
+        <div className="row" style={{ justifyContent:"flex-end", gap:8 }}>
+          {hasExistingDoc && (
+            <button type="button" className="ghost" onClick={()=>{ handleRemove(); onClose(); }}>Quitar documento</button>
+          )}
+          <button type="submit" className="primary">Guardar documento</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function usePagination(items, page, pageSize = 10){
+  return useMemo(()=>{
+    const total = items.length;
+    const totalPages = total === 0 ? 1 : Math.ceil(total / pageSize);
+    const currentPage = Math.min(Math.max(page, 1), totalPages);
+    const startIndex = total === 0 ? 0 : (currentPage - 1) * pageSize;
+    const endIndex = total === 0 ? 0 : Math.min(startIndex + pageSize, total);
+    const pageItems = total === 0 ? [] : items.slice(startIndex, endIndex);
+    return { pageItems, total, totalPages, currentPage, startIndex, endIndex, pageSize };
+  }, [items, page, pageSize]);
+}
+
+function PaginationFooter({ pager, onPrev, onNext }){
+  if (!pager || pager.total === 0) return null;
+  const rangeLabel = `${pager.startIndex + 1}–${pager.endIndex} de ${pager.total}`;
+  const showControls = pager.total > pager.pageSize;
+  return (
+    <div className="row" style={{ justifyContent:"space-between", alignItems:"center", marginTop:8, flexWrap:"wrap", gap:8 }}>
+      <span className="small">{rangeLabel}</span>
+      {showControls && (
+        <div className="row" style={{ gap:8 }}>
+          <button className="ghost" type="button" onClick={onPrev} disabled={pager.currentPage<=1}>← Anterior</button>
+          <button className="ghost" type="button" onClick={onNext} disabled={pager.currentPage>=pager.totalPages}>Siguiente →</button>
+        </div>
+      )}
+    </div>
   );
 }
