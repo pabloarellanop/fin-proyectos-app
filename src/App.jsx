@@ -3,6 +3,7 @@ import {
   PieChart, Pie, Cell, Tooltip as RTooltip, Legend,
   BarChart, Bar, CartesianGrid, XAxis, YAxis, ResponsiveContainer
 } from "recharts";
+import Auth from "./Auth";
 import { supabase, WORKSPACE_ID } from "./supabaseClient";
 
 const STORE_KEY = "fin-app-state";
