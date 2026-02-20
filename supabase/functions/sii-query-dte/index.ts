@@ -610,151 +610,254 @@ async function fetchSIIDocuments(
 
   console.log(`[FETCH] empresa=${rutEmpresa}-${dvEmpresa}, periodo=${periodo}`);
 
-  // Pre-step: visit Mi SII to activate session across subdomains
-  try {
-    await fetch("https://misiir.sii.cl/cgi_misii/siihome.cgi", {
-      headers: { "User-Agent": UA, "Cookie": cookies },
-      redirect: "follow",
-    });
-  } catch (_) {}
+  // ════════════════════════════════════════
+  // PHASE 1: Discover real API endpoints from SII SPA bundles
+  // ════════════════════════════════════════
+  let spaInfo: any = {};
+  const discoveredPaths: string[] = [];
 
-  // ── All endpoint patterns (most likely first) ──
-  const endpoints = [
-    // RCV Compras (purchases received)
-    { n: "rcv-compras-1", u: `https://www4.sii.cl/consdcvinternetui/rest/rgDocCompras?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL` },
-    { n: "rcv-resumen", u: `https://www4.sii.cl/consdcvinternetui/rest/rgResumen?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}` },
-    { n: "rcv-buscar", u: `https://www4.sii.cl/consdcvinternetui/rest/rgBuscarDocCompras?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}&codTipoDoc=ALL&estadoContab=REGISTRO` },
-    { n: "rcv-compras-2", u: `https://www4.sii.cl/consdcvinternetui/rest/rgDocCompras?rutReceptor=${rutEmpresa}&dvReceptor=${dvEmpresa}&periodoTributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL` },
-    // RCV Ventas (sales emitted)
-    { n: "rcv-ventas", u: `https://www4.sii.cl/consdcvinternetui/rest/rgDocVentas?rut_emisor=${rutEmpresa}&dv_emisor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL` },
-    // Path-based patterns
-    { n: "rcv-path", u: `https://www4.sii.cl/consdcvinternetui/rest/compras/${rutEmpresa}-${dvEmpresa}/${periodo}` },
-    { n: "rcv-dcv", u: `https://www4.sii.cl/consdcvinternetui/rest/dcv/${rutEmpresa}/${dvEmpresa}/${periodo}` },
-    // DTE Emitidos / Recibidos
-    { n: "emitidos", u: `https://www4.sii.cl/consemitidosinternetui/rest/services/dtes/emitidos?rut=${rutEmpresa}&dv=${dvEmpresa}&tipoDoc=ALL&periodo=${periodo}` },
-    { n: "recibidos", u: `https://www4.sii.cl/consemitidosinternetui/rest/services/dtes/recibidos?rut=${rutEmpresa}&dv=${dvEmpresa}&tipoDoc=ALL&periodo=${periodo}` },
-    // Boletas
-    { n: "boletas-e", u: `https://www4.sii.cl/bolaboracioninternetui/rest/services/boleta/emitida/${rutEmpresa}/${dvEmpresa}?periodo=${periodo}` },
-    { n: "boletas-r", u: `https://www4.sii.cl/bolaboracioninternetui/rest/services/boleta/recibida/${rutEmpresa}/${dvEmpresa}?periodo=${periodo}` },
-    // CGI endpoints
-    { n: "dte-auth-7", u: "https://palena.sii.cl/cgi_dte/UPL/DTEauth?7" },
-    { n: "dte-auth-6", u: "https://palena.sii.cl/cgi_dte/UPL/DTEauth?6" },
+  // Load multiple SII apps in parallel to find API paths
+  const spaApps = [
+    { n: "rcv", u: "https://www4.sii.cl/consdcvinternetui/" },
+    { n: "emitidos", u: "https://www4.sii.cl/consemitidosinternetui/" },
+    { n: "recibidos", u: "https://www4.sii.cl/consrecibidosinternetui/" },
   ];
 
-  for (const ep of endpoints) {
+  try {
+    const spaResults = await Promise.allSettled(
+      spaApps.map(async (app) => {
+        const c = new AbortController();
+        const t = setTimeout(() => c.abort(), 5000);
+        const r = await fetch(app.u, { headers: hdrs, redirect: "follow", signal: c.signal });
+        clearTimeout(t);
+        const html = await r.text();
+        const isAuth = !html.includes("IngresoRutClave") && !html.includes("CAutInicio");
+        // Extract all JS bundle URLs
+        const scripts = [...html.matchAll(/src=["']([^"']*\.js[^"']*)/gi)].map(m => m[1]);
+        // Also find inline REST paths
+        const inlinePaths: string[] = [];
+        for (const m of html.matchAll(/["']((?:\/[\w-]+)*\/rest\/[\w/.-]+)["']/g)) {
+          if (!inlinePaths.includes(m[1])) inlinePaths.push(m[1]);
+        }
+        return { name: app.n, isAuth, scripts, inlinePaths, htmlSize: html.length };
+      })
+    );
+
+    const allScriptUrls: string[] = [];
+    for (const sr of spaResults) {
+      if (sr.status === "fulfilled") {
+        const v = sr.value;
+        spaInfo[v.name] = { auth: v.isAuth, scripts: v.scripts.length, htmlSize: v.htmlSize };
+        if (v.isAuth) {
+          for (const p of v.inlinePaths) {
+            if (!discoveredPaths.includes(p)) discoveredPaths.push(p);
+          }
+          for (const s of v.scripts) {
+            const jsUrl = s.startsWith("http") ? s :
+              s.startsWith("/") ? `https://www4.sii.cl${s}` :
+              `https://www4.sii.cl/${s}`;
+            if (!allScriptUrls.includes(jsUrl)) allScriptUrls.push(jsUrl);
+          }
+        }
+      }
+    }
+
+    // Fetch JS bundles in parallel (max 6) to extract REST API paths
+    if (allScriptUrls.length > 0) {
+      const jsResults = await Promise.allSettled(
+        allScriptUrls.slice(0, 6).map(async (jsUrl) => {
+          const c = new AbortController();
+          const t = setTimeout(() => c.abort(), 5000);
+          const r = await fetch(jsUrl, {
+            headers: { "User-Agent": UA, "Cookie": cookies },
+            signal: c.signal,
+          });
+          clearTimeout(t);
+          const js = await r.text();
+          const paths: string[] = [];
+          // Find REST endpoints: "/rest/...", "/services/...", "/api/..."
+          for (const m of js.matchAll(/["']((?:\/[\w-]+)*\/(?:rest|services|api)\/[\w/.:-]+)["']/g)) {
+            const p = m[1];
+            if (p.length > 5 && p.length < 120 && !p.includes("\\")) paths.push(p);
+          }
+          // Find URL patterns with template literals or concatenation
+          for (const m of js.matchAll(/(?:url|endpoint|path|api|service)\s*[=:]\s*["'](\/[\w/.:-]+)["']/gi)) {
+            const p = m[1];
+            if (p.includes("rest") || p.includes("service")) paths.push(p);
+          }
+          return { url: jsUrl.split("/").pop(), paths };
+        })
+      );
+
+      for (const jr of jsResults) {
+        if (jr.status === "fulfilled") {
+          for (const p of jr.value.paths) {
+            if (!discoveredPaths.includes(p)) discoveredPaths.push(p);
+          }
+        }
+      }
+    }
+
+    spaInfo.discoveredPaths = discoveredPaths;
+    console.log(`[FETCH] Discovered ${discoveredPaths.length} API paths from SPA bundles`);
+  } catch (e: any) {
+    spaInfo.discoveryError = (e.message || "").substring(0, 100);
+  }
+
+  // ════════════════════════════════════════
+  // PHASE 2: Build endpoint list (known + discovered)
+  // ════════════════════════════════════════
+  const rutFmt = formatRutDots(rutEmpresa, dvEmpresa); // "76.xxx.xxx-K"
+
+  // Known endpoint patterns (various SII API versions)
+  const knownEndpoints = [
+    // RCV — Registro de Compras y Ventas
+    `https://www4.sii.cl/consdcvinternetui/rest/rgDocCompras?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL`,
+    `https://www4.sii.cl/consdcvinternetui/rest/rgResumen?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}`,
+    `https://www4.sii.cl/consdcvinternetui/rest/rgDocVentas?rut_emisor=${rutEmpresa}&dv_emisor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL`,
+    // DCV services
+    `https://www4.sii.cl/dcvinternetservices/rest/rgDocCompras?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL`,
+    `https://www4.sii.cl/dcvinternetservices/rest/rgResumen?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}`,
+    `https://www4.sii.cl/dcvinternetservices/rest/rgDocVentas?rut_emisor=${rutEmpresa}&dv_emisor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL`,
+    // Emitidos / Recibidos
+    `https://www4.sii.cl/consemitidosinternetui/rest/services/dtes/emitidos?rut=${rutEmpresa}&dv=${dvEmpresa}&tipoDoc=ALL&periodo=${periodo}`,
+    `https://www4.sii.cl/consrecibidosinternetui/rest/services/dtes/recibidos?rut=${rutEmpresa}&dv=${dvEmpresa}&tipoDoc=ALL&periodo=${periodo}`,
+    // RCV con formato alternativo
+    `https://www4.sii.cl/consdcvinternetui/rest/rgDocCompras?rutReceptor=${rutEmpresa}&dvReceptor=${dvEmpresa}&periodoTributario=${periodo}`,
+    // Boletas
+    `https://www4.sii.cl/bolaboracioninternetui/rest/services/boleta/emitida/${rutEmpresa}/${dvEmpresa}?periodo=${periodo}`,
+    // IECV (Información Electrónica de Compras y Ventas)
+    `https://www4.sii.cl/aboraboracioninternetui/rest/services/iecv/compras/${rutEmpresa}/${dvEmpresa}/${periodo}`,
+    `https://www4.sii.cl/registrocompaboracioninternetui/rest/services/compras/${rutEmpresa}/${dvEmpresa}/${periodo}`,
+  ];
+
+  // Build discovered endpoint URLs with query params
+  const discoveredEndpoints: string[] = [];
+  for (const dp of discoveredPaths) {
+    // Skip paths that already have full query params embedded or are too generic
+    if (dp.includes("?") || dp.length < 6) continue;
+    
+    // Build full URL with params
+    const base = dp.startsWith("http") ? dp : `https://www4.sii.cl${dp}`;
+    
+    // Try with query params
+    discoveredEndpoints.push(`${base}?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL`);
+    discoveredEndpoints.push(`${base}?rut=${rutEmpresa}&dv=${dvEmpresa}&periodo=${periodo}`);
+  }
+
+  // Combine all unique endpoints
+  const allEndpoints: { n: string; u: string }[] = [];
+  const seenUrls = new Set<string>();
+  
+  for (const u of knownEndpoints) {
+    if (!seenUrls.has(u)) { seenUrls.add(u); allEndpoints.push({ n: `known-${allEndpoints.length}`, u }); }
+  }
+  for (const u of discoveredEndpoints) {
+    if (!seenUrls.has(u)) { seenUrls.add(u); allEndpoints.push({ n: `disc-${allEndpoints.length}`, u }); }
+  }
+
+  console.log(`[FETCH] Testing ${allEndpoints.length} endpoints (${knownEndpoints.length} known + ${discoveredEndpoints.length} discovered)`);
+
+  // ════════════════════════════════════════
+  // PHASE 3: Try all endpoints in parallel
+  // ════════════════════════════════════════
+  async function tryEndpoint(ep: { n: string; u: string }): Promise<{ name: string; docs?: any[]; info: any }> {
     try {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 8000);
+      const tid = setTimeout(() => ctrl.abort(), 5000);
       const resp = await fetch(ep.u, { headers: hdrs, redirect: "manual", signal: ctrl.signal });
       clearTimeout(tid);
 
       const status = resp.status;
       const ct = resp.headers.get("content-type") || "";
-      const body = await resp.text();
-      const a: any = { name: ep.n, status, type: ct.split(";")[0], len: body.length };
+      const bodyText = await resp.text();
+      
+      // Clean URL for logging (remove long query strings)
+      const shortUrl = ep.u.replace(/https:\/\/www4\.sii\.cl/, "").split("?")[0];
+      const info: any = { name: ep.n, url: shortUrl, status, type: ct.split(";")[0], len: bodyText.length };
 
       if (status >= 300 && status < 400) {
-        a.note = "redirect";
-        a.location = (resp.headers.get("location") || "").substring(0, 100);
+        info.note = "redirect";
+        info.location = (resp.headers.get("location") || "").substring(0, 120);
       } else if (status === 200) {
-        // Try JSON
-        const firstChar = body.trimStart().charAt(0);
+        const trimmed = bodyText.trimStart();
+        const firstChar = trimmed.charAt(0);
+        
+        // Try JSON parsing
         if (ct.includes("json") || firstChar === "{" || firstChar === "[") {
           try {
-            const data = JSON.parse(body);
+            const data = JSON.parse(bodyText);
             const docs = extractDocArray(data);
             if (docs.length > 0) {
-              console.log(`[FETCH] ✅ ${ep.n}: ${docs.length} docs`);
-              return { ok: true, documents: docs, method: ep.n, periodo, totalDocs: docs.length, attempts };
+              return { name: ep.n, docs, info: { ...info, note: `found-${docs.length}-docs` } };
             }
-            a.note = `json-keys:${Object.keys(data).slice(0, 5).join(",")}`;
+            // Store the keys for debugging even if no docs
+            const keys = typeof data === "object" && data !== null ? Object.keys(data).slice(0, 8) : [];
+            info.note = `json:${keys.join(",")}`;
+            info.sample = JSON.stringify(data).substring(0, 250);
           } catch (_) {
-            a.note = "json-parse-fail";
+            info.note = "json-parse-fail";
+            info.sample = bodyText.substring(0, 150);
           }
         }
         // Try HTML scraping
-        if (ct.includes("html")) {
-          if (body.includes("IngresoRutClave") || body.includes("CAutInicio")) {
-            a.note = "login-redirect";
-          } else if (body.includes("<table")) {
-            const docs = scrapeTable(body);
+        else if (ct.includes("html")) {
+          if (bodyText.includes("IngresoRutClave") || bodyText.includes("CAutInicio")) {
+            info.note = "needs-login";
+          } else if (bodyText.includes("<table")) {
+            const docs = scrapeTable(bodyText);
             if (docs.length > 0) {
-              console.log(`[FETCH] ✅ ${ep.n} scraped ${docs.length} docs`);
-              return { ok: true, documents: docs, method: ep.n + "-html", periodo, totalDocs: docs.length, attempts };
+              return { name: ep.n + "-html", docs, info: { ...info, note: `scraped-${docs.length}-docs` } };
             }
-            a.note = "html-table-no-data";
+            info.note = "html-table-empty";
           } else {
-            a.note = "html-no-table";
+            info.note = "html-other";
+            info.sample = bodyText.substring(0, 200);
           }
-          a.snippet = body.substring(0, 200);
+        } else {
+          info.note = `other-content`;
+          info.sample = bodyText.substring(0, 200);
         }
       } else {
-        a.note = `http-${status}`;
+        info.note = `http-${status}`;
       }
 
-      attempts.push(a);
-      console.log(`[FETCH] ${ep.n}: ${status} ${a.note || ""}`);
+      return { name: ep.n, info };
     } catch (e: any) {
-      attempts.push({ name: ep.n, error: (e.message || "").substring(0, 80) });
+      const msg = (e.message || "").substring(0, 80);
+      return { name: ep.n, info: { name: ep.n, error: msg.includes("abort") ? "timeout" : msg } };
     }
   }
 
-  // ── SPA discovery: load the RCV Angular app, find JS bundles, extract API paths ──
-  let spaInfo: any = {};
-  try {
-    const spaResp = await fetch("https://www4.sii.cl/consdcvinternetui/", {
-      headers: hdrs,
-      redirect: "follow",
-    });
-    const html = await spaResp.text();
+  // Run in batches of 8 to avoid overwhelming
+  let foundResult: any = null;
+  for (let i = 0; i < allEndpoints.length && !foundResult; i += 8) {
+    const batch = allEndpoints.slice(i, i + 8);
+    const results = await Promise.allSettled(batch.map(ep => tryEndpoint(ep)));
 
-    if (!html.includes("IngresoRutClave") && !html.includes("CAutInicio")) {
-      spaInfo.loaded = true;
-      spaInfo.size = html.length;
-
-      // Find JS bundle URLs
-      const scripts = [...html.matchAll(/src=["']([^"']*\.js[^"']*)/gi)].map((m) => m[1]);
-      spaInfo.scripts = scripts.length;
-
-      const apiPaths: string[] = [];
-      for (const s of scripts.slice(0, 4)) {
-        const jsUrl = s.startsWith("http")
-          ? s
-          : `https://www4.sii.cl${s.startsWith("/") ? "" : "/consdcvinternetui/"}${s}`;
-        try {
-          const jr = await fetch(jsUrl, { headers: { "User-Agent": UA, "Cookie": cookies } });
-          const js = await jr.text();
-          for (const m of js.matchAll(/["']((?:\/\w+)?\/rest\/[\w/]+)["']/g)) {
-            if (!apiPaths.includes(m[1])) apiPaths.push(m[1]);
-          }
-        } catch (_) {}
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        attempts.push(r.value.info);
+        if (r.value.docs && r.value.docs.length > 0 && !foundResult) {
+          foundResult = {
+            ok: true,
+            documents: r.value.docs,
+            method: r.value.name,
+            periodo,
+            totalDocs: r.value.docs.length,
+            attempts,
+            spaInfo,
+          };
+        }
+      } else {
+        attempts.push({ name: "batch-error", error: (r.reason?.message || "").substring(0, 80) });
       }
-      spaInfo.apiPaths = apiPaths;
-
-      // Try discovered API paths
-      for (const p of apiPaths) {
-        const url = `https://www4.sii.cl${p}?rut_receptor=${rutEmpresa}&dv_receptor=${dvEmpresa}&ptributario=${periodo}&estadoContab=REGISTRO&codTipoDoc=ALL`;
-        try {
-          const r = await fetch(url, { headers: hdrs, redirect: "manual" });
-          if (r.status === 200) {
-            const b = await r.text();
-            try {
-              const d = JSON.parse(b);
-              const docs = extractDocArray(d);
-              if (docs.length > 0) {
-                return { ok: true, documents: docs, method: `spa:${p}`, periodo, totalDocs: docs.length, spaInfo, attempts };
-              }
-            } catch (_) {}
-          }
-          attempts.push({ name: `spa:${p}`, status: r.status });
-        } catch (_) {}
-      }
-    } else {
-      spaInfo.loaded = false;
-      spaInfo.note = "session-invalid-for-spa";
     }
-  } catch (e: any) {
-    spaInfo.error = (e.message || "").substring(0, 80);
+  }
+
+  if (foundResult) {
+    console.log(`[FETCH] ✅ Found docs via ${foundResult.method}`);
+    return foundResult;
   }
 
   console.log(`[FETCH] ❌ No docs found after ${attempts.length} attempts`);
@@ -764,6 +867,7 @@ async function fetchSIIDocuments(
     periodo,
     attempts,
     spaInfo,
+    hint: "Expanda 'Detalles técnicos' para ver qué respondió cada endpoint. Los que devolvieron JSON (json:...) están más cerca de funcionar.",
   };
 }
 

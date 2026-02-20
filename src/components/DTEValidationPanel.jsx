@@ -408,46 +408,81 @@ export default function DTEValidationPanel({ state, updateExpense }) {
               </table>
             </div>
           ) : docFetchMsg && !docFetchMsg.ok ? (
-            <div style={{ textAlign: "center", padding: 20, color: "var(--muted)" }}>
-              <div style={{ fontSize: 30, marginBottom: 8 }}>🔍</div>
-              <div style={{ marginBottom: 8 }}>No se encontraron documentos. El SII podría requerir un flujo de navegación específico.</div>
+            <div style={{ textAlign: "left", padding: 16 }}>
+              <div style={{ textAlign: "center", marginBottom: 12 }}>
+                <div style={{ fontSize: 30, marginBottom: 8 }}>🔍</div>
+                <div className="muted">No se encontraron documentos. Se están descubriendo los endpoints reales del SII.</div>
+              </div>
+
+              {/* Diagnóstico técnico — siempre visible */}
               {docFetchMsg.attempts?.length > 0 && (
-                <details style={{ marginTop: 12, textAlign: "left" }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>🔧 Detalles técnicos ({docFetchMsg.attempts.length} endpoints probados)</summary>
-                  <div style={{ fontSize: 11, marginTop: 8, maxHeight: 240, overflow: "auto", background: "#f8fafc", padding: 8, borderRadius: 6 }}>
-                    {docFetchMsg.attempts.map((a, i) => (
-                      <div key={i} style={{
-                        marginBottom: 4, padding: "4px 6px", borderRadius: 4,
-                        background: a.status === 200 ? "#f0fdf4" : a.status >= 300 && a.status < 400 ? "#fffbeb" : "#fef2f2",
-                      }}>
-                        <b>{a.name}</b>: {a.status ? `HTTP ${a.status}` : `Error: ${a.error || "?"}`}
-                        {a.note && <span className="muted"> — {a.note}</span>}
-                        {a.type && <span className="muted"> [{a.type}]</span>}
-                        {a.len !== undefined && <span className="muted"> {a.len}b</span>}
-                        {a.snippet && <div className="muted" style={{ fontSize: 10, marginTop: 2, wordBreak: "break-all" }}>{a.snippet.substring(0, 120)}</div>}
-                      </div>
-                    ))}
+                <details open style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>🔧 Diagnóstico ({docFetchMsg.attempts.length} endpoints probados)</summary>
+                  <div style={{ fontSize: 11, marginTop: 8, maxHeight: 400, overflow: "auto", background: "#f8fafc", padding: 8, borderRadius: 6 }}>
+                    {docFetchMsg.attempts.map((a, i) => {
+                      const bgColor = a.note?.includes("found") || a.note?.includes("scraped")
+                        ? "#dcfce7"
+                        : a.status === 200 ? "#f0fdf4"
+                        : a.note === "needs-login" || a.note === "redirect" ? "#fffbeb"
+                        : a.error ? "#fef2f2"
+                        : "#f1f5f9";
+                      return (
+                        <div key={i} style={{ marginBottom: 4, padding: "4px 6px", borderRadius: 4, background: bgColor }}>
+                          <div>
+                            <b>{a.name}</b>
+                            {a.url && <span className="muted" style={{ fontSize: 10, marginLeft: 4 }}>{a.url}</span>}
+                            {": "}
+                            {a.status ? <span style={{ fontWeight: 600 }}>HTTP {a.status}</span> : <span style={{ color: "#dc2626" }}>{a.error || "?"}</span>}
+                            {a.note && <span className="muted"> — {a.note}</span>}
+                            {a.type && <span className="muted"> [{a.type}]</span>}
+                            {a.len !== undefined && <span className="muted"> {a.len}b</span>}
+                          </div>
+                          {a.sample && (
+                            <div style={{ fontSize: 10, marginTop: 2, fontFamily: "monospace", wordBreak: "break-all", color: "#475569", background: "#e2e8f0", padding: "2px 4px", borderRadius: 3 }}>
+                              {a.sample.substring(0, 300)}
+                            </div>
+                          )}
+                          {a.location && <div className="muted" style={{ fontSize: 10 }}>→ {a.location}</div>}
+                        </div>
+                      );
+                    })}
                   </div>
                 </details>
               )}
-              {docFetchMsg.spaInfo && (
-                <details style={{ marginTop: 8, textAlign: "left" }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>🌐 Descubrimiento SPA RCV</summary>
+
+              {/* SPA discovery info */}
+              {docFetchMsg.spaInfo && Object.keys(docFetchMsg.spaInfo).length > 0 && (
+                <details open style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>🌐 Descubrimiento de APIs del SII</summary>
                   <div style={{ fontSize: 11, marginTop: 4, padding: 8, background: "#f8fafc", borderRadius: 6 }}>
-                    <div>SPA cargada: {docFetchMsg.spaInfo.loaded ? "✅ Sí" : "❌ No"} {docFetchMsg.spaInfo.note || ""}</div>
-                    {docFetchMsg.spaInfo.scripts !== undefined && <div>Bundles JS encontrados: {docFetchMsg.spaInfo.scripts}</div>}
-                    {docFetchMsg.spaInfo.size && <div>HTML tamaño: {docFetchMsg.spaInfo.size} bytes</div>}
-                    {docFetchMsg.spaInfo.apiPaths?.length > 0 && (
-                      <div style={{ marginTop: 4 }}>
-                        <b>APIs descubiertas en JS:</b>
-                        {docFetchMsg.spaInfo.apiPaths.map((p, i) => (
-                          <div key={i} className="muted" style={{ fontFamily: "monospace", fontSize: 10 }}>{p}</div>
-                        ))}
-                      </div>
-                    )}
-                    {docFetchMsg.spaInfo.error && <div style={{ color: "#dc2626" }}>Error: {docFetchMsg.spaInfo.error}</div>}
+                    {Object.entries(docFetchMsg.spaInfo).map(([key, val]) => {
+                      if (key === "discoveredPaths") {
+                        const paths = val;
+                        return (
+                          <div key={key} style={{ marginTop: 4 }}>
+                            <b>APIs descubiertas en bundles JS ({paths.length}):</b>
+                            {paths.map((p, i) => (
+                              <div key={i} style={{ fontFamily: "monospace", fontSize: 10, color: "#2563eb", marginLeft: 8 }}>{p}</div>
+                            ))}
+                          </div>
+                        );
+                      }
+                      if (key === "discoveryError") return <div key={key} style={{ color: "#dc2626" }}>Error: {val}</div>;
+                      if (typeof val === "object") {
+                        return (
+                          <div key={key} style={{ marginBottom: 4 }}>
+                            <b>{key}:</b> auth={val.auth ? "✅" : "❌"} scripts={val.scripts} html={val.htmlSize}b
+                          </div>
+                        );
+                      }
+                      return null;
+                    })}
                   </div>
                 </details>
+              )}
+
+              {docFetchMsg.hint && (
+                <div className="muted" style={{ marginTop: 8, fontSize: 11, fontStyle: "italic" }}>💡 {docFetchMsg.hint}</div>
               )}
             </div>
           ) : !docFetchMsg ? (
